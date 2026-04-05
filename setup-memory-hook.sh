@@ -22,7 +22,8 @@ mkdir -p "$HOOKS_DIR" "$RULES_DIR" "$SKILLS_DIR"
 for file in memory-sessions.md memory-decisions.md memory-preferences.md memory-profile.md; do
   if [ ! -f "$RULES_DIR/$file" ]; then
     name=$(echo "$file" | sed 's/memory-//' | sed 's/\.md//')
-    echo "# ${name^}" > "$RULES_DIR/$file"
+    capitalized=$(echo "$name" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+    echo "# $capitalized" > "$RULES_DIR/$file"
     echo "  Created $RULES_DIR/$file"
   fi
 done
@@ -107,7 +108,7 @@ SKILLEOF
   echo "  Created $SKILLS_DIR/newfeature.md"
 fi
 
-# Write the hook script
+# Write the hook script (always overwrite to pick up updates)
 cat > "$HOOK_SCRIPT" << 'HOOKEOF'
 #!/bin/bash
 # Stop hook: remind Claude to update memory files if code was changed but memory wasn't
@@ -117,7 +118,8 @@ DIR="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null)" || exit 
 cd "$DIR" || exit 0
 
 # Get list of modified/new files (staged + unstaged)
-changed=$(git diff --name-only HEAD 2>/dev/null; git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
+# Handle empty repos where HEAD doesn't exist yet
+changed=$(git diff --name-only HEAD 2>/dev/null || git diff --name-only --cached 2>/dev/null; git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
 
 # Were any non-memory files changed? (code, config, etc.)
 code_changed=$(echo "$changed" | grep -v '^\.claude/rules/memory-' | grep -v '^$' | head -1)
@@ -126,40 +128,70 @@ code_changed=$(echo "$changed" | grep -v '^\.claude/rules/memory-' | grep -v '^$
 memory_changed=$(echo "$changed" | grep '^\.claude/rules/memory-' | head -1)
 
 if [ -n "$code_changed" ] && [ -z "$memory_changed" ]; then
-  echo "MEMORY UPDATE REQUIRED: Code was changed but memory files were not updated. Update .claude/rules/memory-sessions.md (and memory-decisions.md if applicable) NOW before continuing."
+  echo "MEMORY UPDATE REQUIRED: Code was changed but memory files were not updated. Update .claude/rules/memory-sessions.md (and memory-decisions.md if applicable) NOW before continuing." >&2
+  exit 2
 fi
 HOOKEOF
 
 chmod +x "$HOOK_SCRIPT"
 echo "  Created $HOOK_SCRIPT"
 
+# Build the hook config using portable $CLAUDE_PROJECT_DIR
+HOOK_CMD="\$CLAUDE_PROJECT_DIR/.claude/hooks/check-memory.sh"
+
 # Add hook to settings.local.json
 if [ -f "$SETTINGS" ]; then
-  # Settings file exists — check if hook is already there
+  # Settings file exists — check if hook is already registered
   if grep -q "check-memory.sh" "$SETTINGS" 2>/dev/null; then
-    echo "  Hook already registered in settings.local.json"
-  else
-    # Merge hooks into existing settings using python (available on most systems)
-    # Use python3 or python, whichever is available
+    # Update the existing command path to use portable variable
     PYTHON_CMD=$(command -v python3 || command -v python) || { echo "Error: Python is required but not found."; exit 1; }
     "$PYTHON_CMD" -c "
 import json, sys
-settings_path, hook_cmd = sys.argv[1], sys.argv[2]
+
+settings_path = sys.argv[1]
+hook_cmd = sys.argv[2]
+
 with open(settings_path) as f:
     cfg = json.load(f)
+
+# Walk through all hook events and update any check-memory.sh references
+for event, entries in cfg.get('hooks', {}).items():
+    for entry in entries:
+        for hook in entry.get('hooks', []):
+            if 'check-memory.sh' in hook.get('command', ''):
+                hook['command'] = hook_cmd
+
+with open(settings_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+" "$SETTINGS" "$HOOK_CMD"
+    echo "  Updated hook path in settings.local.json"
+  else
+    # Merge new hook into existing settings
+    PYTHON_CMD=$(command -v python3 || command -v python) || { echo "Error: Python is required but not found."; exit 1; }
+    "$PYTHON_CMD" -c "
+import json, sys
+
+settings_path = sys.argv[1]
+hook_cmd = sys.argv[2]
+
+with open(settings_path) as f:
+    cfg = json.load(f)
+
 cfg.setdefault('hooks', {}).setdefault('Stop', []).append({
     'matcher': '',
     'hooks': [{'type': 'command', 'command': hook_cmd}]
 })
+
 with open(settings_path, 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
-" "$SETTINGS" "$HOOK_SCRIPT"
+" "$SETTINGS" "$HOOK_CMD"
     echo "  Added hook to existing settings.local.json"
   fi
 else
-  # Create new settings file
-  cat > "$SETTINGS" << SETEOF
+  # Create new settings file with portable path
+  cat > "$SETTINGS" << 'SETEOF'
 {
   "hooks": {
     "Stop": [
@@ -168,7 +200,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "$HOOK_SCRIPT"
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/check-memory.sh"
           }
         ]
       }
