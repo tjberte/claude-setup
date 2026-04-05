@@ -65,5 +65,14 @@ if ! grep -qxF "$RESOLVED_DIR" "$PROJECTS_FILE" 2>/dev/null; then
   echo "Registered $RESOLVED_DIR for future updates."
 fi
 
+# Create initial commit so hooks have a baseline to diff against
+if [ -z "$(git -C "$PROJECT_DIR" log --oneline -1 2>/dev/null)" ]; then
+  echo ""
+  echo "Creating initial commit..."
+  git -C "$PROJECT_DIR" add -A
+  git -C "$PROJECT_DIR" commit -m "Initial project setup via claude-setup"
+  echo "  Initial commit created."
+fi
+
 echo ""
 echo "Setup complete for $PROJECT_DIR"
