@@ -134,6 +134,21 @@ if [ -n "$code_changed" ] && [ -z "$memory_changed" ]; then
   issues="${issues}MEMORY UPDATE REQUIRED: Code was changed but memory files were not updated. Update .claude/rules/memory-sessions.md (and memory-decisions.md if applicable).\n"
 fi
 
+# --- Check 1b: Empty memory files ---
+empty_memories=""
+for memfile in .claude/rules/memory-profile.md .claude/rules/memory-decisions.md .claude/rules/memory-preferences.md .claude/rules/memory-sessions.md; do
+  if [ -f "$memfile" ]; then
+    # Count non-empty lines that aren't just the heading
+    content_lines=$(grep -cv '^\s*$\|^#' "$memfile" 2>/dev/null || true)
+    if [ "$content_lines" -eq 0 ]; then
+      empty_memories="${empty_memories} $(basename "$memfile" .md | sed 's/memory-//')"
+    fi
+  fi
+done
+if [ -n "$empty_memories" ]; then
+  issues="${issues}EMPTY MEMORY FILES: The following memory files have no content:${empty_memories}. Fill them in — profile (who is the user), decisions (architectural choices), preferences (how user likes to work), sessions (what was done).\n"
+fi
+
 # --- Check 2: CLAUDE.md freshness ---
 if [ -f "CLAUDE.md" ]; then
   # Detect unfilled template (HTML comments are placeholder markers)
