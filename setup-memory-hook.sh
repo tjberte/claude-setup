@@ -111,24 +111,54 @@ fi
 # Write the hook script (always overwrite to pick up updates)
 cat > "$HOOK_SCRIPT" << 'HOOKEOF'
 #!/bin/bash
-# Stop hook: remind Claude to update memory files if code was changed but memory wasn't
+# Stop hook: enforce memory updates and CLAUDE.md freshness
 
 # Find the project root via git
 DIR="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null)" || exit 0
 cd "$DIR" || exit 0
 
+issues=""
+
+# --- Check 1: Memory files ---
 # Get list of modified/new files (staged + unstaged)
 # Handle empty repos where HEAD doesn't exist yet
 changed=$(git diff --name-only HEAD 2>/dev/null || git diff --name-only --cached 2>/dev/null; git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
 
 # Were any non-memory files changed? (code, config, etc.)
-code_changed=$(echo "$changed" | grep -v '^\.claude/rules/memory-' | grep -v '^$' | head -1)
+code_changed=$(echo "$changed" | grep -v '^\.claude/rules/memory-' | grep -v '^CLAUDE\.md$' | grep -v '^$' | head -1)
 
 # Were memory files updated?
 memory_changed=$(echo "$changed" | grep '^\.claude/rules/memory-' | head -1)
 
 if [ -n "$code_changed" ] && [ -z "$memory_changed" ]; then
-  echo "MEMORY UPDATE REQUIRED: Code was changed but memory files were not updated. Update .claude/rules/memory-sessions.md (and memory-decisions.md if applicable) NOW before continuing." >&2
+  issues="${issues}MEMORY UPDATE REQUIRED: Code was changed but memory files were not updated. Update .claude/rules/memory-sessions.md (and memory-decisions.md if applicable).\n"
+fi
+
+# --- Check 2: CLAUDE.md freshness ---
+if [ -f "CLAUDE.md" ]; then
+  # Detect unfilled template (HTML comments are placeholder markers)
+  placeholder_count=$(grep -c '<!-- ' CLAUDE.md 2>/dev/null || true)
+  if [ "$placeholder_count" -ge 2 ]; then
+    issues="${issues}CLAUDE.md UPDATE REQUIRED: CLAUDE.md still has unfilled template placeholders. Review the project and fill in Overview, Tech Stack, Getting Started, Project Structure, and Development sections with actual project details.\n"
+  fi
+else
+  issues="${issues}CLAUDE.md MISSING: No CLAUDE.md found. Create one with project overview, tech stack, build/test commands, and conventions.\n"
+fi
+
+# --- Check 3: CLAUDE.md may need updates from code changes ---
+if [ -n "$code_changed" ] && [ -z "$issues" ]; then
+  # Check if structural files changed (new deps, config, build files, docker, etc.)
+  structural_change=$(echo "$changed" | grep -E '(package\.json|requirements\.txt|Gemfile|go\.mod|Cargo\.toml|docker-compose|Dockerfile|Makefile|\.yml$|\.yaml$|\.toml$|\.conf$)' | head -1)
+  if [ -n "$structural_change" ]; then
+    claude_md_changed=$(echo "$changed" | grep '^CLAUDE\.md$' | head -1)
+    if [ -z "$claude_md_changed" ]; then
+      issues="${issues}CLAUDE.md REVIEW SUGGESTED: Project config files changed ($(echo "$changed" | grep -E '(package\.json|requirements\.txt|Gemfile|go\.mod|Cargo\.toml|docker-compose|Dockerfile|Makefile|\.yml$|\.yaml$|\.toml$|\.conf$)' | tr '\n' ', ' | sed 's/, $//')) but CLAUDE.md was not updated. Check if tech stack, build commands, or project structure sections need updating.\n"
+    fi
+  fi
+fi
+
+if [ -n "$issues" ]; then
+  printf "%b" "$issues" >&2
   exit 2
 fi
 HOOKEOF
